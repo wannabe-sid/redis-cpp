@@ -1,172 +1,191 @@
-myRedis
--------
+# RedisCore
 
-This is my implementation of popular in-memory key-value database [Redis](https://github.com/redis/redis) from scratch in C++. (referred to as myRedis in rest of this doc)
+A from-scratch implementation of [Redis](https://github.com/redis/redis) — the popular in-memory key-value database — written in C++. Referred to as **RedisCore** throughout this document.
 
-myRedis supports the same operations as the actual version of Redis at launch in 2009. The list of commands supported are:
+RedisCore speaks the real [RESP protocol](https://redis.io/docs/latest/develop/reference/protocol-spec/) and is fully compatible with the official [`redis-cli`](https://redis.io/docs/latest/develop/connect/cli/), so you can connect to it exactly as you would a real Redis server.
 
-- [SET](https://redis.io/docs/latest/commands/set/)
-- [GET](https://redis.io/docs/latest/commands/get/)
-- [EXISTS](https://redis.io/docs/latest/commands/exists/)
-- [DEL](https://redis.io/docs/latest/commands/del/)
-- [INCR](https://redis.io/docs/latest/commands/incr/)
-- [DECR](https://redis.io/docs/latest/commands/decr/)
-- [LPUSH](https://redis.io/docs/latest/commands/lpush/)
-- [RPUSH](https://redis.io/docs/latest/commands/rpush/)
-- [LRANGE](https://redis.io/docs/latest/commands/lrange/)
-- [SAVE](https://redis.io/docs/latest/commands/save/)
+> **Goal of this project:** not to outperform official Redis, but to deeply understand how Redis — and server applications in C++ generally — actually work under the hood.
 
-The objective of this project is just to build a functional key-value database application from scratch. myRedis is not written with an aim to overperform official redis in some metric, but rather to deeply understand how Redis and server applications in C++ works. 
+---
 
-Performance 
------------
+## Table of Contents
 
-Here is a benchmark of how myRedis performs:
+- [Supported Commands](#supported-commands)
+- [Performance](#performance)
+- [Building RedisCore](#building-rediscore)
+- [Running RedisCore](#running-rediscore)
+- [Talking to RedisCore](#talking-to-rediscore)
+- [Key Design Choices](#key-design-choices)
+- [Source Code Layout](#source-code-layout)
+- [Improvements / Future Work](#improvements--future-work)
+- [About](#about)
 
-```
+---
+
+## Supported Commands
+
+RedisCore supports the same set of operations as the original Redis had at its 2009 launch:
+
+| Command | Description |
+|---|---|
+| [`SET`](https://redis.io/docs/latest/commands/set/) | Set a string value for a key |
+| [`GET`](https://redis.io/docs/latest/commands/get/) | Get the string value of a key |
+| [`EXISTS`](https://redis.io/docs/latest/commands/exists/) | Check whether a key exists |
+| [`DEL`](https://redis.io/docs/latest/commands/del/) | Delete a key |
+| [`INCR`](https://redis.io/docs/latest/commands/incr/) | Increment a key's integer value |
+| [`DECR`](https://redis.io/docs/latest/commands/decr/) | Decrement a key's integer value |
+| [`LPUSH`](https://redis.io/docs/latest/commands/lpush/) | Push a value onto the left of a list |
+| [`RPUSH`](https://redis.io/docs/latest/commands/rpush/) | Push a value onto the right of a list |
+| [`LRANGE`](https://redis.io/docs/latest/commands/lrange/) | Get a range of elements from a list |
+| [`SAVE`](https://redis.io/docs/latest/commands/save/) | Persist current state to disk |
+
+---
+
+## Performance
+
+Benchmarked with the official `redis-benchmark` tool (`-n 100000`, SET/GET only):
+
+```bash
 redis-benchmark -p 2000 -t set,get, -n 100000 -q
 SET: 207468.88 requests per second
 GET: 213675.22 requests per second
 ```
 
-For comparison here is how current official version of redis performs:
-```
+For comparison, official Redis on the same setup:
+
+```bash
 redis-benchmark -t set,get, -n 100000 -q
 SET: 222222.23 requests per second
 GET: 222717.16 requests per second
 ```
 
-Building myRedis
-----------------
+| Command | RedisCore | Official Redis | RedisCore vs. Official |
+|---|---|---|---|
+| `SET` | 207,468.88 req/s | 222,222.23 req/s | ~93.4% |
+| `GET` | 213,675.22 req/s | 222,717.16 req/s | ~95.9% |
 
-Let's say the path you cloned this repo is `$REDIS_HOME`. Steps to build myRedis:
-```
-$export REDIS_HOME=/path/to/your/clone
-$cd $REDIS_HOME
-$mkdir ${REDIS_HOME}/bin
-$cd bin
-$cmake $REDIS_HOME
-$make
-```
+Despite using a simpler one-thread-per-client model instead of Redis's single-threaded event loop, RedisCore reaches **~93–96% of official Redis's throughput** on basic SET/GET workloads.
 
-This will create the executable named `redis` in `${REDIS_HOME}\bin` directory.
+---
 
-Running myRedis
-----------------
+## Building RedisCore
 
-To run myRedis, just do:
-```
-$cd $REDIS_HOME
-$bin/redis
+Let `$REDIS_HOME` be the path where you cloned this repo:
+
+```bash
+export REDIS_HOME=/path/to/your/clone
+cd $REDIS_HOME
+mkdir ${REDIS_HOME}/bin
+cd bin
+cmake $REDIS_HOME
+make
 ```
 
-This will start a myRedis server at port 2000 (You can change that in `config.json` file).
+This creates the `redis` executable inside `${REDIS_HOME}/bin`.
 
-You should see an output like below if you are running this for the first time:
+---
+
+## Running RedisCore
+
+```bash
+cd $REDIS_HOME
+bin/redis
 ```
-$bin/redis
+
+This starts the RedisCore server on port `2000` (configurable in `config.json`).
+
+> **Important:** the executable must be run from `$REDIS_HOME`, since RedisCore expects a `config.json` file in its current working directory.
+
+On first run, you should see:
+
+```
+$ bin/redis
 State restoral failed! Continuing with empty state...
 Server listening on port: 2000
 ```
 
-(More on state restoral below)
+*(See [Key Design Choices](#key-design-choices) below for more on state restoral.)*
 
-Note that you must run this executable from your `$REDIS_HOME` directory, as myRedis assumes that a 
-`config.json` file is present in the directory the executable is being run in.
+---
 
-Talking to myRedis
-------------------
+## Talking to RedisCore
 
-You can talk to myRedis using official [redis-cli](https://redis.io/docs/latest/develop/connect/cli/)! In a different terminal you can try the following:
+Connect using the official `redis-cli`:
+
+```bash
+redis-cli -p 2000
 ```
-$redis-cli -p 2000
+
+Example session:
+
+```
 127.0.0.1:2000> ping
 PONG
-127.0.0.1:2000> echo "this is myRedis"
-this is myRedis
-127.0.0.1:2000> set name1 ram 
+127.0.0.1:2000> echo "this is RedisCore"
+this is RedisCore
+127.0.0.1:2000> set name1 ram
 OK
 127.0.0.1:2000> get name1
 ram
-127.0.0.1:2000> rpush statement myRedis looks interesting!
+127.0.0.1:2000> rpush statement RedisCore looks interesting!
 (integer) 3
 127.0.0.1:2000> lrange statement 0 -1
-1) "myRedis"
+1) "RedisCore"
 2) "looks"
 3) "interesting!"
 127.0.0.1:2000> save
 OK
 ```
 
-Key choices of myRedis
-----------------------
-There are few ways myRedis is different from official implementation. 
+---
 
-- myRedis uses one thread per client connection, as opposed to single threaded event loop architecture of official redis
-    - main reason to choose this was ease of implementation
-    - working with async io code in c++ seems to be quite messy
-- myRedis being multi-threaded implements necessary locking to protect data race
-- myRedis supports persistence to disk by dumping snapshot of myRedis data into a `state.json` file in `$REDIS_HOME`. This is unlike official redis which uses binary `rdb` file. If there exists a `state.json` file in `$REDIS_HOME` dir from its last run, myRedis will load this file at startup, otherwise will run with an empty state.
-    - chose `json` just because it is human readable, and I wanted to see changes to data in action on running `save` redis cmd
-    - at some point in future, I may consider moving this to a binary format like `protobuf` or `rdb` itself
-- myRedis supports to two configs via `config.json` file in `$REDIS_HOME` dir:
-    - `port`: the port at which you want your myRedis server to run
-    - `snapshot_period`: the time period (in minutes) of periodic snapshot of myRedis' in-memory state
+## Key Design Choices
 
+RedisCore intentionally diverges from official Redis in a few places:
 
-Source code layout
-===
+- **Threading model** — RedisCore uses **one thread per client connection**, unlike official Redis's single-threaded event-loop architecture.
+  - Chosen mainly for implementation simplicity — async I/O in C++ turned out to be considerably messier to work with.
+  - Being multi-threaded, RedisCore implements the necessary **locking** around shared data to prevent race conditions.
+- **Persistence** — RedisCore dumps a snapshot of its in-memory state to a `state.json` file in `$REDIS_HOME`, instead of official Redis's binary `.rdb` format.
+  - JSON was chosen for human-readability, to make it easy to visually inspect state changes after running `save`.
+  - A move to a binary format (e.g. `protobuf`, or `rdb` itself) is a possible future improvement.
+  - On startup, RedisCore loads `state.json` from the previous run if present; otherwise it starts with an empty state.
+- **Configuration** — via `config.json` in `$REDIS_HOME`, supporting:
+  - `port` — the port the server listens on
+  - `snapshot_period` — how often (in minutes) the server automatically snapshots its state
 
-Following are the important files:
+---
 
-CMakeLists.txt
---------------
-Contains information on how to build myRedis executable.
+## Source Code Layout
 
-server.cpp
-----------
-This is the main file, which starts up the server and launches a new thread for every client connection. This also creates the snapshot thread which periodically wakes up after a fixed time interval to dump myRedis' state.
+| File | Description |
+|---|---|
+| `CMakeLists.txt` | Build configuration for the RedisCore executable. |
+| `server.cpp` | Main entry point — starts the server, spawns a new thread per client connection, and launches the periodic snapshot thread. |
+| `RESPParser.cpp` / `.h` | Implements deserialization of client requests per the [RESP protocol](https://redis.io/docs/latest/develop/reference/protocol-spec/) (arrays of bulk strings). Uses an 8192-byte read cache per client to avoid excessive `read` syscalls, exposed via `read_new_request()`. |
+| `redisstore.cpp` / `.h` | Core data-structure layer. `RedisStore` is a singleton exposing all the storage operations needed by the command layer. |
+| `cmds.cpp` / `.h` | Implements each Redis command as a thin, validating wrapper around `RedisStore` methods. |
+| `type.cpp` / `.h` | RESP output serialization. Defines a base `RObject` class, subclassed by each RESP data type (string, error, integer, bulk string, array), each implementing its own `serialize()`. |
+| `config.cpp` / `.h` | Reads server configuration from `config.json`. |
+| `common.cpp` / `.h` | Shared utilities used across the codebase. |
+| `config.json` | Runtime configuration (port, snapshot period). |
+| `state.json` | Persisted snapshot of RedisCore's in-memory state (created after the first `SAVE`). |
 
-RESPParser.cpp (.h)
--------------------
-Redis uses [RESP](https://redis.io/docs/latest/develop/reference/protocol-spec/) protocol to exchange messages between server and client. 
+> **Design note:** Some RESP object-definition logic in `type.cpp` arguably overlaps with what `RESPParser` does. However, `RESPParser` requires substantially more validation logic during deserialization, so serialization and deserialization were deliberately kept in separate files rather than unified.
 
-Each client request is an [array](https://redis.io/docs/latest/develop/reference/protocol-spec/#arrays) of [bulk strings](https://redis.io/docs/latest/develop/reference/protocol-spec/#bulk-strings). This file implements the deserialization logic of the client request including the logic to read from client `fd`.
+---
 
-Since RESP uses `\r\n` (CRLF) to separate two meaningful items, a RESP parser would have to process the serialized message item by item. Instead of reading item by item from socket, myRedis has a read cache of `8192` bytes which prevents parser from making large number of expensive `read` syscalls.
+## Improvements / Future Work
 
-Each client thread have a RESPParser object which exposes `read_new_request()` method.
+- Limit the number of concurrent client connections, or explore a thread-pool architecture instead of one-thread-per-client.
+- Move state persistence to a binary protocol (e.g. `protobuf` or Redis's own `rdb` format) instead of JSON.
+- Support passing configuration via command-line arguments, not just `config.json`.
+- Explore the specialized data-structure optimizations used in official Redis.
 
-redisstore.cpp (.h)
--------------------
+---
 
-This file implements the data structures which house all the data stored in myRedis. RedisStore is a singleton class which exposes relevant methods required by redis cmds.
+## About
 
-cmds.cpp (.h)
--------------
+Implementation of Redis in C++, built to understand Redis internals and C++ server design first-hand — not to compete with official Redis on performance.
 
-This file houses the implementation of redis cmds. These are essentially a thin wrapper to do validation of redis cmds before calling actual methods of RedisStore
-
-type.cpp (.h)
--------------
-
-To send a reply to redis-client, redis-server also needs to serialize output as per RESP. There are multiple [data types](https://redis.io/docs/latest/develop/reference/protocol-spec/#resp-protocol-description) supported in RESP each of which have there own serialization logic. 
-
-This file defines a base class `RObject` from which all fancy types (string, error, integers, bulk string, array) inherit. Each sub-class needs to define it's own `serialize()` method as per RESP.
-
-Arguably some part of RESPParser should have utilized object definitions here, and it might have been nicer to have serialization and deserialization logic in one place. However RESPParser had much more nuances because of validations required before successful deserialization. This is why myRedis has opted to keep them separate.
-
-config.cpp (.h)
----------------
-
-Enables reading up config from the `config.json` file.
-
-Improvements
-------------
-
-- Limit number of client connections or explore thread pool architecture
-- Use binary protocol to dump in-memory state
-- support passing config as an argument
-- explore unique data structures optimization in official redis
-
-
+**Author:** [wannabe-sid](https://github.com/wannabe-sid)
